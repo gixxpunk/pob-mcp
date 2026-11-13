@@ -23,7 +23,7 @@ export async function handleFindWeightedTradeItems(context: TradeContext & { get
     if (!client) throw new Error('Lua bridge not active. Load a build first.');
     const { query, warning } = await client.generateWeightedTradeQuery(args.slot, args.options);
     if (!query || typeof query !== 'object') throw new Error('PoB returned no trade query');
-    const search = await context.tradeClient.searchItems(args.league, query as TradeQuery);
+    const search = await context.tradeClient.searchItems(args.league, toTradeRequestBody(query) as unknown as TradeQuery);
     if (!search.result?.length) return { content: [{ type: 'text' as const, text: `=== Weighted BIS Search (${args.league}, slot: ${args.slot}) ===\nNo items found.${warning ? `\nWarning: ${warning}` : ''}` }] };
     const items = await context.tradeClient.fetchItems(search.result.slice(0, Math.min(args.limit ?? 5, 10)), search.id);
     const lines = [`=== Weighted BIS Search (${args.league}, slot: ${args.slot}) ===`, `Total matches: ${search.total} | Showing: ${items.length}`, `🔗 ${getTradeSearchUrl(args.league, search.id)}`, warning ? `Warning: ${warning}` : ''];
@@ -31,6 +31,39 @@ export async function handleFindWeightedTradeItems(context: TradeContext & { get
       const item = listing.item, price = listing.listing.price;
       lines.push(`${index + 1}. ${item.name || item.typeLine}${item.name && item.typeLine && item.name !== item.typeLine ? ` (${item.typeLine})` : ''}`, price ? `   Price: ${price.amount} ${price.currency}` : '   Price: unlisted', `   Seller: ${listing.listing.account?.name ?? 'unknown'}`, '');
     }
+    return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+  });
+}
+
+/**
+ * Older PoB returned the full Trade API body ({ query, sort }); current PoB returns only
+ * the inner query. The Trade API and the trade site's ?q= parameter both need the body.
+ */
+export function toTradeRequestBody(generated: unknown): { query: Record<string, unknown>; sort: Record<string, string> } {
+  const obj = generated as Record<string, unknown>;
+  if (obj && typeof obj.query === 'object' && obj.query !== null) {
+    return { query: obj.query as Record<string, unknown>, sort: (obj.sort as Record<string, string>) ?? { 'statgroup.0': 'desc' } };
+  }
+  return { query: obj, sort: { 'statgroup.0': 'desc' } };
+}
+
+/**
+ * Run PoB's own stat-weight generator for a slot and return the trade request body.
+ * Makes no Trade API request, so it needs neither POE_TRADE_ENABLED nor POE_SESSION_ID.
+ */
+export async function handleGenerateWeightedTradeQuery(context: { getLuaClient: () => import('../pobLuaBridge.js').PoBLuaApiClient | null; ensureLuaClient: () => Promise<void> }, args: { slot: string; league?: string; options?: Record<string, unknown> }) {
+  return wrapHandler('generate weighted trade query', async () => {
+    await context.ensureLuaClient();
+    const client = context.getLuaClient();
+    if (!client) throw new Error('Lua bridge not active. Load a build first.');
+    const { query, warning } = await client.generateWeightedTradeQuery(args.slot, args.options);
+    if (!query || typeof query !== 'object') throw new Error('PoB returned no trade query');
+    const body = toTradeRequestBody(query);
+    const json = JSON.stringify(body);
+    const lines = [`=== Weighted Trade Query (slot: ${args.slot}) ===`];
+    if (warning) lines.push(`Warning: ${warning}`);
+    if (args.league) lines.push(`Trade site link: https://www.pathofexile.com/trade/search/${encodeURIComponent(args.league)}?q=${encodeURIComponent(json)}`);
+    lines.push('', 'Request body:', json);
     return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
   });
 }

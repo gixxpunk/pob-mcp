@@ -2,6 +2,17 @@
 
 local M = {}
 
+-- Older PoB takes constructor arguments in new(name, ...); current PoB rejects
+-- them and expects new(name):name(...). Try the old form, fall back to the new.
+local function construct(className, ...)
+  local args = { n = select('#', ...), ... }
+  local ok, obj = pcall(new, className, unpack(args, 1, args.n))
+  if ok then return obj end
+  local instance = new(className)
+  return instance[className](instance, unpack(args, 1, args.n))
+end
+M.construct = construct
+
 -- PoB's own config option table is the only authoritative list of valid config
 -- vars and their types. Deriving from it means new upstream options work here
 -- without a code change; a hand-maintained allowlist silently drifts instead.
@@ -406,7 +417,10 @@ function M.update_tree_delta(params)
   local tv = params.treeVersion or current.treeVersion
   -- import_from_node_list merges the spec's existing mastery selections
   -- underneath params.masteryEffects itself, so a bare pass-through is enough.
-  M.import_from_node_list(build.spec, tonumber(classId) or 0, tonumber(ascendId) or 0, tonumber(secId) or 0, nodes, {}, params and params.masteryEffects, tv)
+  -- Keep the spec's tattoo overrides; importing with an empty table silently removed every tattoo.
+  local overrides = {}
+  for nodeId, override in pairs(build.spec.hashOverrides or {}) do overrides[nodeId] = override end
+  M.import_from_node_list(build.spec, tonumber(classId) or 0, tonumber(ascendId) or 0, tonumber(secId) or 0, nodes, overrides, params and params.masteryEffects, tv)
   M.get_main_output()
 
   -- Report what PoB actually allocated. Requesting a node is not the same as
@@ -614,6 +628,28 @@ function M.set_config(params)
       else
         rejected[key] = 'expected number'
       end
+    elseif value == '__unset__' and index[key] then
+      -- Clear an option back to PoB's default (e.g. drop a charge-count override).
+      input[key] = nil
+      applied[key] = '__unset__'
+      changed = true
+    elseif key == 'customMods' and not index[key] then
+      -- Current PoB keeps custom modifiers as groups per config set. Use a
+      -- dedicated "MCP" group so the build's own groups stay untouched.
+      local configSet = build.configTab.configSets and build.configTab.configSets[build.configTab.activeConfigSetId]
+      local text = tostring(value or '')
+      if configSet then
+        configSet.customModsList = configSet.customModsList or {}
+        local list = configSet.customModsList
+        for i = #list, 1, -1 do
+          if list[i].title == 'MCP' then table.remove(list, i) end
+        end
+        if text ~= '' then table.insert(list, { title = 'MCP', enabled = true, text = text }) end
+      else
+        input.customMods = text
+      end
+      applied[key] = text
+      changed = true
     elseif index[key] then
       local coerced, err = coerceConfigValue(index[key], value)
       if err then
@@ -710,7 +746,7 @@ function M.add_item_text(params)
     return nil, string.format('item text too long (max %d bytes)', MAX_ITEM_TEXT_LENGTH)
   end
 
-  local ok, item = pcall(new, 'Item', params.text)
+  local ok, item = pcall(construct, 'Item', params.text)
   if not ok then return nil, 'invalid item text: ' .. tostring(item) end
   if not item or not item.baseName then return nil, 'failed to parse item' end
 
@@ -1169,7 +1205,7 @@ function M.create_spec(params)
     end
   end
   local version = (source and source.treeVersion) or (build.spec and build.spec.treeVersion) or latestTreeVersion
-  local newSpec = new('PassiveSpec', build, version)
+  local newSpec = construct('PassiveSpec', build, version)
   if source then
     -- Same copy mechanism TreeTab uses for its spec management popup
     newSpec.jewels = copyTable(source.jewels)

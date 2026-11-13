@@ -149,7 +149,8 @@ try {
 
   await client.loadBuildXml(await readFile(gearedBuildXml, 'utf8'), 'weighted-query-smoke');
   const weighted = await client.generateWeightedTradeQuery('Amulet');
-  const query = weighted.query;
+  // Older PoB returns { query, sort }; current PoB returns only the inner query.
+  const query = weighted.query && typeof weighted.query.query === 'object' ? weighted.query : { query: weighted.query };
   if (!query || typeof query !== 'object' || query.query?.status?.option !== 'available' || query.query?.filters?.type_filters?.filters?.category?.option !== 'accessory.amulet' || !Array.isArray(query.query?.stats?.[0]?.filters) || query.query.stats[0].filters.length === 0) {
     throw new Error(`unexpected upstream weighted trade query: ${JSON.stringify(query)}`);
   }
